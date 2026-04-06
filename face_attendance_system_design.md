@@ -219,7 +219,8 @@ CREATE TABLE face_embeddings (
     embedding    BLOB         NOT NULL,  -- Lưu dạng bytes (numpy array serialize)
     model_type   VARCHAR(20)  DEFAULT 'face_recognition', -- 'face_recognition' | 'LBPH'
     image_ref    VARCHAR(255),           -- Đường dẫn ảnh gốc (tuỳ chọn, có thể NULL)
-    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP -- Hỗ trợ incremental sync
 );
 
 -- Index để tăng tốc tìm kiếm theo user
@@ -249,6 +250,7 @@ CREATE TABLE attendance (
     shift      INTEGER  DEFAULT 1,            -- Ca làm (1, 2, ...)
     status     VARCHAR(20) DEFAULT 'present', -- present | late | absent
     device_id  VARCHAR(50),                   -- Pi nào ghi nhận
+    match_distance REAL,                      -- Khoảng cách nhận diện (dùng phân tích drift)
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 
     -- Ràng buộc: mỗi người chỉ có 1 bản ghi check-in/ca/ngày
@@ -427,6 +429,7 @@ POST /api/attendance
   "user_id": 42,
   "timestamp": "2025-01-10T08:30:15",
   "confidence": 0.87,
+  "match_distance": 0.42,
   "device_id": "pi_classroom_01",
   "location": "Phòng B201"
 }
@@ -467,12 +470,12 @@ POST /api/attendance
 ### 5.5 API Endpoints cần thiết
 
 ```
-# Nhận kết quả từ Pi
+# Nhận kết quả từ Pi (yêu cầu JWT)
 POST   /api/attendance          - Pi gửi kết quả nhận diện
 POST   /api/unknown             - Pi gửi cảnh báo unknown
 
-# Đồng bộ embedding về Pi
-GET    /api/embeddings          - Pi tải danh sách embedding khi khởi động
+# Đồng bộ embedding về Pi (yêu cầu JWT)
+GET    /api/embeddings          - tải danh sách embedding (có hỗ trợ last_sync_time)
 
 # Quản lý (Admin Dashboard)
 GET    /api/attendance?date=    - Xem danh sách điểm danh theo ngày
@@ -1056,11 +1059,15 @@ async def enroll_from_upload(
 
 # --- Đồng bộ embedding về Pi ---
 @app.get("/api/embeddings/sync")
-async def sync_embeddings():
+async def sync_embeddings(last_sync_time: str = None):
     """
-    Pi gọi endpoint này khi khởi động để tải danh sách embedding mới nhất.
+    Pi gọi endpoint này để đồng bộ embedding mới nhất.
+    Hỗ trợ đồng bộ một phần (incremental) thông qua last_sync_time.
     """
-    rows = db.query("SELECT user_id, embedding, model_type FROM face_embeddings")
+    if last_sync_time:
+        rows = db.query("SELECT user_id, embedding, model_type FROM face_embeddings WHERE updated_at > ?", (last_sync_time,))
+    else:
+        rows = db.query("SELECT user_id, embedding, model_type FROM face_embeddings")
     return {
         "count": len(rows),
         "embeddings": [
@@ -1278,6 +1285,37 @@ DEMO (Camera thời gian thực)         TEST DATA (Upload ảnh)
 
 ---
 
+## 8. Cải Tiến & Tính Năng Nâng Cao (AIoT)
+
+Để cân bằng giữa một đồ án môn học AIoT và tính thực tế, hệ thống bổ sung một số cơ chế đơn giản nhưng mang lại hiệu quả cao theo các góp ý chuyên sâu:
+
+### 8.1 Bảo mật API với JWT
+*   **Vấn đề:** Các endpoint dễ bị gọi giả mạo (spoofing) từ người dùng trái phép trên cùng mạng WiFi.
+*   **Thiết kế:** Áp dụng xác thực JWT cơ bản. Pi lưu trữ cấu hình `API_KEY` ở biến môi trường hoặc file local. Khi gọi API, gửi thêm Header: `Authorization: Bearer <token_jwt>`.
+
+### 8.2 Cơ chế đồng bộ Incremental Sync cho Embedding
+*   **Vấn đề:** Tải lại toàn bộ embedding từ đầu làm tốn băng thông và khá lâu trên Pi.
+*   **Thiết kế:**
+    *   Bảng `face_embeddings` có trường `updated_at`.
+    *   Raspberry Pi lưu trạng thái thời điểm update gần nhất (`last_sync_time`).
+    *   API sync `/api/embeddings/sync` có hỗ trợ `last_sync_time`. Nếu có truyền time, server **chỉ trả về** những embeddings mới hơn mốc này. Pi sẽ chèn/cập nhật vào cache trên RAM thay vì reset từ đầu.
+
+### 8.3 Xử lý rủi ro Data Drift (Khuôn mặt thay đổi)
+*   **Vấn đề:** Con người thay đổi qua thời gian (tuổi tác, tóc, mập/ốm). Nhận diện lâu ngày có thể giảm độ chính xác và chậm chạp.
+*   **Thiết kế:**
+    *   **Tracking Drift:** Server nhận thông số `match_distance` và lưu lại trong bản ghi lịch sử điểm danh.
+    *   **Adaptive Threshold:** Dựa vào `match_distance`, nếu user có distance luôn lân cận ~0.45 – 0.49 (đúng nhưng không chắc chắn) liên tục, thì hệ thống cảnh báo **Warning Re-enroll**.
+    *   **Re-enrollment Policy:** Đề xuất thông báo yêu cầu người dùng phải chủ động cập nhật lại thông tin khuôn mặt sau một khoảng thời gian (khoảng 3 – 6 tháng).
+
+### 8.4 Anti-Spoofing & Liveness Detection Cơ Bản
+*   **Vấn đề:** Người dùng giơ ảnh in hoặc màn hình điện thoại dẫn đến qua mặt được model nhận diện khuôn mặt.
+*   **Thiết kế:** Dùng **Blink Detection** (đơn giản, dễ setup cho đồ án):
+    *   Dùng haar-cascade, dlib, hoặc mediapipe face mesh để đo tham số EAR (Eye Aspect Ratio).
+    *   Phát hiện người thật với thao tác chớp mắt từ Tốt -> Nhắm -> Tốt chỉ trong vài frames.
+    *   Chỉ các hình ảnh xác định qua liveness mới tiến hành qua bước Extract embedding để so khớp.
+
+---
+
 ## Tóm Tắt Các Quyết Định Thiết Kế
 
 | Hạng mục | Quyết định | Lý do |
@@ -1290,6 +1328,10 @@ DEMO (Camera thời gian thực)         TEST DATA (Upload ảnh)
 | Detection model | HOG | Cân bằng tốc độ/chính xác |
 | Số ảnh enrollment | 10–20 ảnh | Đủ chính xác, không quá nặng |
 | Offline handling | Queue tạm trên Pi | Tránh mất dữ liệu |
+| Cải tiến bảo mật | Sử dụng JWT token Auth | Xác thực thiết bị một cách rõ ràng |
+| Cập nhật Data | Incremental Sync | Tối ưu hóa băng thông, tải trên Server và RAM trên Pi |
+| Cải thiện Face Drift | Adaptive Thresholds & distance | Phân tích xu hướng để nhắc nhở re-enrollment |
+| Liveness Detection | Blink detection logic qua EAR | Hiệu suất khá tốt cho Raspberry Pi trong đồ án |
 | Enrollment camera | Auto capture + quality check | Tránh ảnh mờ/xấu lọt vào DB |
 | Enrollment upload | Batch từ thư mục | Dễ chuẩn bị test data hàng loạt |
 | Kiểm tra chất lượng ảnh | Size + Laplacian blur | Loại ảnh mờ, quá nhỏ tự động |
