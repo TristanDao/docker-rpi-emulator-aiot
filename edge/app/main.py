@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import json
 import logging
 import signal
@@ -31,6 +32,8 @@ _enrollment_queue: asyncio.Queue = asyncio.Queue()
 
 _latest_frame: bytes = b""
 _user_names: dict[int, str] = {}
+_current_mode: str = "trace"  # "trace" = display only, "checkin" = send attendance
+_recent_events: collections.deque = collections.deque(maxlen=50)
 
 
 def _signal_handler(sig, frame):
@@ -113,10 +116,16 @@ async def handle_enrollment(user_id: int, samples: int, timeout: int) -> dict:
 
 def _get_overlay_info() -> dict:
     enrolling = not _enrollment_queue.empty()
+    if enrolling:
+        mode = "ENROLLING"
+    elif _current_mode == "checkin":
+        mode = "CHECK-IN"
+    else:
+        mode = "TRACE"
     return {
         "device_id": DEVICE_ID,
         "location": DEVICE_LOCATION,
-        "mode": "ENROLLING" if enrolling else "RECOGNITION",
+        "mode": mode,
     }
 
 
@@ -208,35 +217,51 @@ async def recognition_loop():
 
             if match:
                 user_id = match["user_id"]
-                if recognizer.is_cooldown_active(user_id):
-                    continue
 
-                logger.info(
-                    "MATCH: user_id=%d confidence=%.3f distance=%.3f",
-                    user_id, match["confidence"], match["distance"],
-                )
+                if _current_mode == "checkin":
+                    if recognizer.is_cooldown_active(user_id):
+                        continue
 
-                payload = {
-                    "user_id": user_id,
-                    "timestamp": now.isoformat(),
-                    "confidence": match["confidence"],
-                    "match_distance": match["distance"],
-                    "device_id": DEVICE_ID,
-                    "location": DEVICE_LOCATION,
-                }
-                result = await api_client.send_attendance(**payload)
-                if result is None:
-                    offline_queue.push("attendance", payload)
+                    logger.info(
+                        "CHECK-IN MATCH: user_id=%d confidence=%.3f distance=%.3f",
+                        user_id, match["confidence"], match["distance"],
+                    )
+
+                    payload = {
+                        "user_id": user_id,
+                        "timestamp": now.isoformat(),
+                        "confidence": match["confidence"],
+                        "match_distance": match["distance"],
+                        "device_id": DEVICE_ID,
+                        "location": DEVICE_LOCATION,
+                    }
+                    result = await api_client.send_attendance(**payload)
+                    if result is None:
+                        offline_queue.push("attendance", payload)
+                    elif result.get("action") in ("CHECK_IN", "CHECK_OUT"):
+                        name = _user_names.get(user_id, f"User #{user_id}")
+                        _recent_events.append({
+                            "action": result["action"],
+                            "user": name,
+                            "message": result.get("message", ""),
+                            "time": now.strftime("%H:%M:%S"),
+                        })
+                else:
+                    logger.debug(
+                        "TRACE: user_id=%d confidence=%.3f (not sending)",
+                        user_id, match["confidence"],
+                    )
             else:
-                logger.info("UNKNOWN face detected")
-                payload = {
-                    "timestamp": now.isoformat(),
-                    "device_id": DEVICE_ID,
-                    "location": DEVICE_LOCATION,
-                }
-                result = await api_client.send_unknown(**payload)
-                if result is None:
-                    offline_queue.push("unknown", payload)
+                if _current_mode == "checkin":
+                    logger.info("UNKNOWN face detected")
+                    payload = {
+                        "timestamp": now.isoformat(),
+                        "device_id": DEVICE_ID,
+                        "location": DEVICE_LOCATION,
+                    }
+                    result = await api_client.send_unknown(**payload)
+                    if result is None:
+                        offline_queue.push("unknown", payload)
 
         last_face_results = current_results
 
@@ -268,6 +293,13 @@ _INDEX_HTML = """<!DOCTYPE html>
   .pill{background:#23233a;border:1px solid #33334d;border-radius:20px;padding:4px 12px;font-size:12px;color:#94a3b8}
   .pill span{color:#4ade80;font-weight:700}
   .pill.mode-enrolling span{color:#fbbf24}
+  .pill.mode-trace span{color:#60a5fa}
+
+  /* Mode toggle */
+  .mode-btn{padding:6px 16px;border:2px solid #3d3d5c;border-radius:20px;font-size:12px;font-weight:700;cursor:pointer;transition:all .25s;background:#23233a;color:#94a3b8}
+  .mode-btn:hover{border-color:#4ade80;color:#e2e8f0}
+  .mode-btn.active-checkin{background:#052e16;border-color:#4ade80;color:#4ade80}
+  .mode-btn.active-trace{background:#1e1b4b;border-color:#60a5fa;color:#60a5fa}
 
   /* Layout */
   .layout{display:grid;grid-template-columns:1fr 380px;gap:0;height:calc(100vh - 53px)}
@@ -334,15 +366,28 @@ _INDEX_HTML = """<!DOCTYPE html>
   /* Progress bar */
   .progress-wrap{background:#1e1e30;border-radius:4px;overflow:hidden;height:6px;margin-top:4px}
   .progress-bar{height:6px;background:#4ade80;width:0%;transition:width .3s}
+
+  /* Toast notifications */
+  .toast-container{position:fixed;top:60px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+  .toast{pointer-events:auto;padding:12px 18px;border-radius:8px;font-size:13px;font-weight:600;color:#fff;box-shadow:0 4px 20px rgba(0,0,0,.4);animation:toastIn .35s ease,toastOut .4s ease 3.6s forwards;max-width:340px}
+  .toast-checkin{background:linear-gradient(135deg,#059669,#047857);border-left:4px solid #4ade80}
+  .toast-checkout{background:linear-gradient(135deg,#2563eb,#1d4ed8);border-left:4px solid #60a5fa}
+  .toast .t-action{font-size:11px;text-transform:uppercase;letter-spacing:.8px;opacity:.85}
+  .toast .t-name{font-size:15px;margin-top:2px}
+  .toast .t-time{font-size:11px;opacity:.65;margin-top:2px}
+  @keyframes toastIn{from{opacity:0;transform:translateX(60px)}to{opacity:1;transform:translateX(0)}}
+  @keyframes toastOut{from{opacity:1}to{opacity:0;transform:translateY(-10px)}}
 </style>
 </head>
 <body>
+<div class="toast-container" id="toasts"></div>
 <div class="header">
   <h1>&#128247; Pi Face Attendance</h1>
   <div class="pills">
     <div class="pill">Device: <span id="s-device">—</span></div>
     <div class="pill" id="pill-mode">Mode: <span id="s-mode">—</span></div>
     <div class="pill">Known users: <span id="s-users">—</span></div>
+    <button class="mode-btn" id="btn-mode" onclick="toggleMode()">&#9654; Switch to CHECK-IN</button>
   </div>
 </div>
 
@@ -432,6 +477,30 @@ _INDEX_HTML = """<!DOCTYPE html>
 <script>
 let _selectedUserId = null;
 
+// ── Toast notifications ──
+function showToast(ev) {
+  const ct = document.getElementById('toasts');
+  const el = document.createElement('div');
+  const isIn = ev.action === 'CHECK_IN';
+  el.className = 'toast ' + (isIn ? 'toast-checkin' : 'toast-checkout');
+  const icon = isIn ? '&#10004;' : '&#128682;';
+  const label = isIn ? 'Check-in' : 'Check-out';
+  const detail = ev.message ? ' &mdash; ' + ev.message : '';
+  el.innerHTML = '<div class="t-action">' + icon + ' ' + label + '</div>'
+    + '<div class="t-name">' + ev.user + '</div>'
+    + '<div class="t-time">' + ev.time + detail + '</div>';
+  ct.appendChild(el);
+  setTimeout(function(){ el.remove(); }, 4200);
+}
+
+async function pollEvents() {
+  try {
+    const evts = await (await fetch('/events')).json();
+    evts.forEach(showToast);
+  } catch {}
+}
+setInterval(pollEvents, 2000);
+
 // ── Tabs ──
 function switchTab(t) {
   document.querySelectorAll('.tab').forEach((el,i)=>el.classList.toggle('active', ['register','enroll'][i]===t));
@@ -440,16 +509,48 @@ function switchTab(t) {
   if (t==='enroll') loadUsers();
 }
 
+// ── Mode toggle ──
+async function toggleMode() {
+  try {
+    const d = await (await fetch('/mode', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})).json();
+    updateModeUI(d.mode);
+  } catch {}
+}
+
+function updateModeUI(mode) {
+  const btn = document.getElementById('btn-mode');
+  const pill = document.getElementById('pill-mode');
+  const modeSpan = document.getElementById('s-mode');
+
+  pill.classList.remove('mode-enrolling','mode-trace');
+  btn.classList.remove('active-checkin','active-trace');
+
+  if (mode === 'enrolling') {
+    modeSpan.textContent = 'ENROLLING';
+    pill.classList.add('mode-enrolling');
+    btn.disabled = true;
+    btn.textContent = '\u23F3 Enrolling...';
+  } else if (mode === 'checkin') {
+    modeSpan.textContent = 'CHECK-IN';
+    btn.disabled = false;
+    btn.classList.add('active-checkin');
+    btn.textContent = '\u2714 CHECK-IN active — switch to TRACE';
+  } else {
+    modeSpan.textContent = 'TRACE';
+    pill.classList.add('mode-trace');
+    btn.disabled = false;
+    btn.classList.add('active-trace');
+    btn.textContent = '\u25B6 TRACE only — switch to CHECK-IN';
+  }
+}
+
 // ── Status poll ──
 async function pollStatus() {
   try {
     const d = await (await fetch('/status')).json();
     document.getElementById('s-device').textContent = d.device_id;
     document.getElementById('s-users').textContent = d.known_users;
-    const mode = d.mode.toUpperCase();
-    document.getElementById('s-mode').textContent = mode;
-    const pill = document.getElementById('pill-mode');
-    pill.classList.toggle('mode-enrolling', d.mode==='enrolling');
+    updateModeUI(d.mode);
   } catch {}
 }
 setInterval(pollStatus, 2000); pollStatus();
@@ -704,10 +805,31 @@ async def api_users(request: web.Request) -> web.Response:
     return web.json_response(users)
 
 
+async def api_toggle_mode(request: web.Request) -> web.Response:
+    global _current_mode
+    try:
+        body = await request.json()
+        mode = body.get("mode")
+    except Exception:
+        mode = None
+
+    if mode and mode in ("trace", "checkin"):
+        _current_mode = mode
+    else:
+        _current_mode = "checkin" if _current_mode == "trace" else "trace"
+
+    logger.info("Mode switched to: %s", _current_mode)
+    return web.json_response({"mode": _current_mode})
+
+
 async def api_status(request: web.Request) -> web.Response:
     enrolling = not _enrollment_queue.empty()
+    if enrolling:
+        mode = "enrolling"
+    else:
+        mode = _current_mode
     return web.json_response({
-        "mode": "enrolling" if enrolling else "recognition",
+        "mode": mode,
         "device_id": DEVICE_ID,
         "location": DEVICE_LOCATION,
         "known_users": len(set(
@@ -716,13 +838,21 @@ async def api_status(request: web.Request) -> web.Response:
     })
 
 
+async def api_events(request: web.Request) -> web.Response:
+    events = list(_recent_events)
+    _recent_events.clear()
+    return web.json_response(events)
+
+
 async def start_edge_api():
     app = web.Application()
     app.router.add_get("/", api_index)
     app.router.add_get("/video_feed", api_video_feed)
     app.router.add_post("/enroll", api_enroll)
     app.router.add_post("/register", api_register)
+    app.router.add_post("/mode", api_toggle_mode)
     app.router.add_get("/users", api_users)
+    app.router.add_get("/events", api_events)
     app.router.add_get("/status", api_status)
 
     runner = web.AppRunner(app, access_log=None)
