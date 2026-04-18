@@ -76,55 +76,93 @@ python -m app.main
 
 Open **http://localhost:8001** for the live camera view.
 
-### Option C — Run edge in Docker WITH a real USB webcam
+### Option C — Run edge in Docker WITH a real USB webcam (Camera Bridge)
 
-Docker containers (Linux) cannot access Windows USB cameras directly.
-You must forward the USB device into WSL2 first using `usbipd-win`.
+Docker containers cannot access Windows USB cameras directly. The **Camera Bridge** solves this by running a lightweight MJPEG HTTP server on the host that captures the webcam and streams it at `http://<LAN-IP>:8888/stream.mjpg`. The Docker edge container reads this stream as its camera source.
 
-**Step 1** — Install `usbipd-win` (run once):
+```
+┌───────────────────┐  MJPEG HTTP   ┌───────────────────────┐
+│  USB Webcam (Host)│ ────────────► │  Edge Container       │
+│  camera_bridge.py │  :8888        │  CAMERA_SOURCE=http://│
+│  (conda env edge) │               │  <LAN-IP>:8888/...    │
+└───────────────────┘               └───────────────────────┘
+```
+
+#### Camera Bridge endpoints
+
+| Path | Description |
+|------|-------------|
+| `/stream.mjpg` | Live MJPEG video stream |
+| `/health` | Health check (JSON: status, frame count, uptime) |
+
+#### Setup (one-time)
+
+Yêu cầu conda env `edge` đã được cài (xem Option B ở trên).
+
+**Step 1** — Register camera bridge as Windows startup task (chạy 1 lần, cần Admin):
 
 ```powershell
-winget install --id=dorssel.usbipd-win -e
-# Restart PowerShell after install
+.\setup_camera_autostart.ps1
 ```
 
-**Step 2** — Bind your webcam to WSL2 (run once per device, requires Admin):
+Script này sẽ:
+- Tìm Python trong conda env `edge`
+- Tạo Scheduled Task `FaceAttendance-CameraBridge` chạy khi đăng nhập Windows
+- Tự động start bridge ngay sau khi đăng ký
+- Bridge auto-detect webcam (index -1), serve MJPEG trên port 8888
+
+Gỡ bỏ nếu không cần:
 
 ```powershell
-# List USB devices and find your camera's BUSID (e.g. 2-1)
-usbipd list
-
-# Bind (one-time, Admin required)
-usbipd bind --busid 2-1
+.\setup_camera_autostart.ps1 -Uninstall
 ```
 
-**Step 3** — Attach camera to WSL2 (run each time you restart or replug):
+**Step 2** — Verify bridge is running:
 
 ```powershell
-usbipd attach --wsl --busid 2-1
+# Health check
+curl http://localhost:8888/health
 
-# Verify the camera appears in WSL2
-wsl ls /dev/video*
-# Expected output: /dev/video0
+# View stream in browser
+# http://localhost:8888/stream.mjpg
 ```
 
-**Step 4** — Update `.env`:
+#### Start hệ thống (hàng ngày)
 
-```env
-CAMERA_SOURCE=/dev/video0
+Sau khi camera bridge đã được setup, chỉ cần chạy:
+
+```powershell
+.\start.ps1
 ```
 
-**Step 5** — Start Docker stack:
+Script `start.ps1` thực hiện 3 bước tự động:
 
-```bash
+| Step | Action | Detail |
+|------|--------|--------|
+| **1/3** | Docker Desktop check | Nếu chưa chạy → tự khởi động, đợi 30s |
+| **2/3** | Camera Bridge check | Gọi `http://localhost:8888/health`. Nếu không phản hồi → start bridge bằng conda env `edge`, đợi 6s. Nếu bridge vẫn fail → cảnh báo kiểm tra webcam |
+| **3/3** | Docker services | Chạy `docker compose up -d`, đợi edge log "Recognition loop started" (timeout 90s) |
+
+Sau khi hoàn tất, script tự động:
+- Cập nhật `CAMERA_SOURCE` trong `.env` với LAN IP hiện tại (để edge container truy cập bridge qua mạng)
+- Mở browser tại `http://localhost:8001` (Live View)
+
+#### Manual start (không dùng start.ps1)
+
+```powershell
+# 1. Start camera bridge (nếu chưa chạy)
+conda activate edge
+python camera_bridge.py --index -1 --port 8888
+
+# 2. Update .env: CAMERA_SOURCE=http://<YOUR-LAN-IP>:8888/stream.mjpg
+
+# 3. Start Docker stack
 docker compose up -d
 ```
 
-The `docker-compose.yml` already has the `/dev/video0` device mapping configured.
-
 ---
 
-## Quick Start
+## Quick Start (demo video, không cần webcam)
 
 ```bash
 # 1. Start database and server

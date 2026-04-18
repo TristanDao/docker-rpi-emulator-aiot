@@ -26,7 +26,7 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow)
 
     embeddings = relationship("FaceEmbedding", back_populates="user", cascade="all, delete-orphan")
-    attendances = relationship("Attendance", back_populates="user")
+    attendances = relationship("Attendance", back_populates="user", cascade="all, delete-orphan")
 
 
 class FaceEmbedding(Base):
@@ -52,7 +52,7 @@ class Attendance(Base):
     __tablename__ = "attendance"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     date = Column(Date, nullable=False)
     check_in = Column(DateTime(timezone=True))
     check_out = Column(DateTime(timezone=True))
@@ -61,6 +61,8 @@ class Attendance(Base):
     status = Column(String(20), default="present")
     device_id = Column(String(50))
     match_distance = Column(Float)
+    check_in_image = Column(String(255))
+    check_out_image = Column(String(255))
     created_at = Column(DateTime(timezone=True), default=_utcnow)
 
     user = relationship("User", back_populates="attendances")

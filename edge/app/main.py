@@ -1,9 +1,12 @@
 import asyncio
+import base64
 import collections
 import json
 import logging
 import signal
 from datetime import datetime, timezone
+
+import cv2
 
 from aiohttp import web
 
@@ -68,6 +71,19 @@ async def _load_user_names(labels: list[dict]):
             user = await api_client.fetch_user(uid)
             if user:
                 _user_names[uid] = user["full_name"]
+
+
+def _crop_face_b64(frame, face_loc, padding=30):
+    """Crop face from frame with padding, return as base64 JPEG."""
+    top, right, bottom, left = face_loc
+    h, w = frame.shape[:2]
+    top = max(0, top - padding)
+    left = max(0, left - padding)
+    bottom = min(h, bottom + padding)
+    right = min(w, right + padding)
+    crop = frame[top:bottom, left:right]
+    _, buf = cv2.imencode('.jpg', crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return base64.b64encode(buf.tobytes()).decode()
 
 
 async def retry_offline_events():
@@ -235,7 +251,8 @@ async def recognition_loop():
                         "device_id": DEVICE_ID,
                         "location": DEVICE_LOCATION,
                     }
-                    result = await api_client.send_attendance(**payload)
+                    snapshot = _crop_face_b64(frame, face_loc)
+                    result = await api_client.send_attendance(**payload, snapshot_b64=snapshot)
                     if result is None:
                         offline_queue.push("attendance", payload)
                     elif result.get("action") in ("CHECK_IN", "CHECK_OUT"):
@@ -336,6 +353,8 @@ _INDEX_HTML = """<!DOCTYPE html>
   .btn-green:hover:not(:disabled){background:#22c55e}
   .btn-blue{background:#3b82f6;color:#fff}
   .btn-blue:hover:not(:disabled){background:#2563eb}
+  .btn-red{background:#dc2626;color:#fff}
+  .btn-red:hover:not(:disabled){background:#b91c1c}
   .btn:disabled{background:#2d2d44;color:#475569;cursor:not-allowed}
 
   /* Result */
@@ -470,6 +489,11 @@ _INDEX_HTML = """<!DOCTYPE html>
         &#128248; Start Face Enrollment
       </button>
       <div id="e-result"></div>
+      <hr class="divider">
+      <button class="btn btn-red" id="btn-delete" onclick="doDelete()">
+        &#128465; Delete Selected User
+      </button>
+      <div id="d-result"></div>
     </div>
   </div>
 </div>
@@ -673,6 +697,38 @@ async function doEnroll() {
   }
   btn.disabled = false;
 }
+
+// ── Delete user ──
+async function doDelete() {
+  if (!_selectedUserId) {
+    document.getElementById('d-result').className='result warn';
+    document.getElementById('d-result').textContent='Select a user first.';
+    return;
+  }
+  if (!confirm('Delete this user? This will remove all their data including attendance records and face embeddings.')) return;
+  const res = document.getElementById('d-result');
+  const btn = document.getElementById('btn-delete');
+  btn.disabled = true;
+  res.className='result info'; res.textContent='Deleting...';
+  try {
+    const r = await fetch('/delete_user', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({user_id: _selectedUserId})
+    });
+    const d = await r.json();
+    if (d.error) {
+      res.className='result err'; res.textContent=d.error;
+    } else {
+      res.className='result ok'; res.textContent='User deleted successfully.';
+      _selectedUserId = null;
+      document.getElementById('sel-info').style.display='none';
+      loadUsers();
+    }
+  } catch(err) {
+    res.className='result err'; res.textContent='Network error: ' + err.message;
+  }
+  btn.disabled = false;
+}
 </script>
 </body>
 </html>"""
@@ -844,6 +900,29 @@ async def api_events(request: web.Request) -> web.Response:
     return web.json_response(events)
 
 
+async def api_delete_user(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    user_id = body.get("user_id")
+    if not user_id or not isinstance(user_id, int):
+        return web.json_response({"error": "user_id (int) required"}, status=400)
+
+    result = await api_client.delete_user(user_id)
+    if result is None:
+        return web.json_response({"error": "Failed to delete user"}, status=500)
+
+    # Remove from local cache
+    _user_names.pop(user_id, None)
+
+    # Reload embeddings
+    await load_embeddings_from_server()
+
+    return web.json_response(result)
+
+
 async def start_edge_api():
     app = web.Application()
     app.router.add_get("/", api_index)
@@ -854,6 +933,7 @@ async def start_edge_api():
     app.router.add_get("/users", api_users)
     app.router.add_get("/events", api_events)
     app.router.add_get("/status", api_status)
+    app.router.add_post("/delete_user", api_delete_user)
 
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()

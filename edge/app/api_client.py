@@ -39,7 +39,8 @@ def _headers() -> dict:
 
 async def send_attendance(user_id: int, timestamp: str, confidence: float,
                           match_distance: float, device_id: str,
-                          location: str) -> dict | None:
+                          location: str,
+                          snapshot_b64: str | None = None) -> dict | None:
     payload = {
         "user_id": user_id,
         "timestamp": timestamp,
@@ -48,6 +49,8 @@ async def send_attendance(user_id: int, timestamp: str, confidence: float,
         "device_id": device_id,
         "location": location,
     }
+    if snapshot_b64 is not None:
+        payload["snapshot_b64"] = snapshot_b64
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
@@ -151,6 +154,17 @@ async def send_enrollment(
             return resp.json()
     except Exception as e:
         logger.error("Failed to send enrollment: %s", e)
+        return None
+
+
+async def delete_user(user_id: int) -> dict | None:
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.delete(f"{SERVER_URL}/api/users/{user_id}")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.error("Failed to delete user %d: %s", user_id, e)
         return None
 
 

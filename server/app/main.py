@@ -1,14 +1,16 @@
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from app.database import init_db
-from app.routers import attendance, embeddings, enrollment, unknown, users
+from app.routers import attendance, dashboard, embeddings, enrollment, unknown, users
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    os.makedirs("/app/attendance_snapshots", exist_ok=True)
     yield
 
 
@@ -24,6 +26,7 @@ app.include_router(users.router, prefix="/api", tags=["Users"])
 app.include_router(enrollment.router, prefix="/api", tags=["Enrollment"])
 app.include_router(embeddings.router, prefix="/api", tags=["Embeddings"])
 app.include_router(unknown.router, prefix="/api", tags=["Unknown"])
+app.include_router(dashboard.router, tags=["Dashboard"])
 
 
 @app.get("/health")

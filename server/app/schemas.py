@@ -37,6 +37,7 @@ class AttendanceRequest(BaseModel):
     match_distance: float
     device_id: str
     location: Optional[str] = None
+    snapshot_b64: Optional[str] = None
 
 
 class AttendanceResponse(BaseModel):
@@ -50,6 +51,8 @@ class AttendanceResponse(BaseModel):
     status: str
     device_id: Optional[str]
     match_distance: Optional[float]
+    check_in_image: Optional[str] = None
+    check_out_image: Optional[str] = None
 
     class Config:
         from_attributes = True

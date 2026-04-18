@@ -1,4 +1,6 @@
+import base64
 import logging
+import os
 from datetime import date as date_type
 from typing import Optional
 
@@ -16,6 +18,17 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _last_seen: dict[int, float] = {}
+
+SNAPSHOT_DIR = "/app/attendance_snapshots"
+
+
+def _save_snapshot(b64_data: str, user_id: int, date, shift: int, action: str) -> str:
+    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+    filename = f"{user_id}_{date}_{shift}_{action.lower()}.jpg"
+    filepath = os.path.join(SNAPSHOT_DIR, filename)
+    with open(filepath, "wb") as f:
+        f.write(base64.b64decode(b64_data))
+    return filename
 
 
 @router.post("/attendance", response_model=AttendanceResult)
@@ -54,6 +67,14 @@ async def record_attendance(
         db.add(record)
         await db.commit()
         await db.refresh(record)
+        if payload.snapshot_b64:
+            try:
+                filename = _save_snapshot(payload.snapshot_b64, user_id, today, 1, "check_in")
+                record.check_in_image = filename
+                await db.commit()
+                await db.refresh(record)
+            except Exception as exc:
+                logger.warning("Failed to save check-in snapshot: %s", exc)
         logger.info("CHECK-IN user_id=%d shift=1", user_id)
         return AttendanceResult(
             action="CHECK_IN",
@@ -65,6 +86,14 @@ async def record_attendance(
         delta = (payload.timestamp - latest_record.check_in).total_seconds()
         latest_record.check_out = payload.timestamp
         latest_record.duration = int(delta)
+        if payload.snapshot_b64:
+            try:
+                filename = _save_snapshot(
+                    payload.snapshot_b64, user_id, today, latest_record.shift, "check_out"
+                )
+                latest_record.check_out_image = filename
+            except Exception as exc:
+                logger.warning("Failed to save check-out snapshot: %s", exc)
         await db.commit()
         await db.refresh(latest_record)
         logger.info("CHECK-OUT user_id=%d duration=%ds", user_id, int(delta))
@@ -87,6 +116,16 @@ async def record_attendance(
     db.add(record)
     await db.commit()
     await db.refresh(record)
+    if payload.snapshot_b64:
+        try:
+            filename = _save_snapshot(
+                payload.snapshot_b64, user_id, today, new_shift, "check_in"
+            )
+            record.check_in_image = filename
+            await db.commit()
+            await db.refresh(record)
+        except Exception as exc:
+            logger.warning("Failed to save check-in snapshot: %s", exc)
     logger.info("CHECK-IN user_id=%d shift=%d", user_id, new_shift)
     return AttendanceResult(
         action="CHECK_IN",
