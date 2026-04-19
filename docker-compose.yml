@@ -15,6 +15,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
 
   server:
     build:
@@ -41,6 +46,11 @@ services:
     volumes:
       - unknown_images:/app/unknown_images
       - attendance_snapshots:/app/attendance_snapshots
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
 
   edge:
     build:
@@ -70,7 +80,7 @@ services:
       resources:
         limits:
           cpus: "1.0"
-          memory: 1024M
+          memory: 256M
 
 volumes:
   pgdata:
