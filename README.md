@@ -197,6 +197,47 @@ docker compose up edge
 curl "http://localhost:8000/api/attendance?date=$(date +%Y-%m-%d)"
 ```
 
+## Dataset (LFW — Labeled Faces in the Wild)
+
+Hệ thống sử dụng LFW dataset để test và benchmark. Có 2 script download:
+
+### Cách 1: via sklearn (khuyên dùng)
+
+```bash
+# Demo nhỏ (15 người, ~400 ảnh) — đủ để test pipeline
+python tools/download_lfw_sklearn.py --output ./dataset/lfw_subset --min-images 10 --max-people 15
+
+# Benchmark đầy đủ (50 người, ~2000 ảnh) — dùng cho báo cáo so sánh thuật toán
+python tools/download_lfw_sklearn.py --output ./dataset/lfw_subset --min-images 10 --max-people 50
+```
+
+### Cách 2: direct URL từ UMass
+
+```bash
+python tools/download_lfw.py --output ./dataset/lfw_subset --min-images 10 --max-people 50
+```
+
+> **Lưu ý**: Cách 2 download từ `vis-www.cs.umass.edu` — có thể bị DNS/firewall chặn. Ưu tiên dùng cách 1.
+
+### Sau khi download
+
+```bash
+# Tạo user từ tên thư mục dataset
+python tools/seed_users.py --dataset ./dataset/lfw_subset --server http://localhost:8000
+
+# Enroll toàn bộ ảnh
+python tools/batch_enroll.py --dataset ./dataset/lfw_subset --server http://localhost:8000
+```
+
+### Benchmark so sánh thuật toán
+
+```bash
+# Chạy benchmark 4 tổ hợp (HOG/Haar × ResNet/LBPH), xuất markdown report
+python tools/benchmark_algorithms.py --dataset ./dataset/lfw_subset --output ./tools/benchmark_results.md
+```
+
+Kết quả benchmark chi tiết xem tại [`tools/benchmark_results.md`](tools/benchmark_results.md).
+
 ## Verified Results (LFW dataset, 15 people)
 
 | Metric         | Value   |
