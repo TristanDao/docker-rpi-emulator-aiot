@@ -44,19 +44,20 @@ On a developer's machine (Windows or Mac), the entire stack runs locally:
 │  │  │                  server  :8000                       │   │  │  │
 │  │  │                                                      │   │  │  │
 │  │  │   FastAPI                                            │   │  │  │
-│  │  │   ├── POST /api/users          (register user)       │   │  │  │
-│  │  │   ├── GET  /api/users/{id}     (fetch user)          │   │  │  │
-│  │  │   ├── POST /api/embeddings     (save face encoding)  │   │  │  │
-│  │  │   ├── GET  /api/embeddings     (load all encodings)  │   │  │  │
-│  │  │   ├── POST /api/attendance     (log attendance)      │   │  │  │
-│  │  │   ├── POST /api/unknown        (log unknown face)    │   │  │  │
-│  │  │   └── GET  /docs               (Swagger UI)          │   │  │  │
+│  │  │   ├── POST /api/users              (register user)    │   │  │  │
+│  │  │   ├── GET  /api/users              (list users)      │   │  │  │
+│  │  │   ├── POST /api/enroll/upload      (enroll images)   │   │  │  │
+│  │  │   ├── POST /api/enroll/embedding   (enroll from edge)│   │  │  │
+│  │  │   ├── GET  /api/embeddings/sync    (sync to edge)    │   │  │  │
+│  │  │   ├── POST /api/attendance         (log attendance)  │   │  │  │
+│  │  │   ├── POST /api/unknown            (log unknown)     │   │  │  │
+│  │  │   └── GET  /docs                   (Swagger UI)      │   │  │  │
 │  │  └──────────────────────────────────┬───────────────────┘   │  │  │
 │  │                                     │ SQLAlchemy async       │  │  │
 │  │  ┌──────────────────────────────────▼──────────────────┐   │  │  │
 │  │  │              postgres  :5432                         │   │  │  │
 │  │  │   Tables: users, face_embeddings,                    │   │  │  │
-│  │  │           attendance_logs, unknown_faces             │   │  │  │
+│  │  │           attendance, unknown_logs                   │   │  │  │
 │  │  └──────────────────────────────────────────────────────┘   │  │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
@@ -92,7 +93,7 @@ Browser:  http://localhost:8001  →  Live view + Enrollment UI
 | Port | `8001` |
 | Camera input | `CAMERA_SOURCE` env var (MJPEG URL or file path) |
 | Reconnect | Auto-reconnects HTTP stream if bridge restarts |
-| Face library | `face_recognition` (dlib HOG + CNN) |
+| Face library | `face_recognition` (dlib HOG + OpenCV Haar cascade) |
 | Text rendering | PIL / Pillow (full Unicode / Vietnamese support) |
 | Offline mode | SQLite queue retries attendance when server unreachable |
 | UI | Embedded aiohttp web server serving HTML + MJPEG |
@@ -104,13 +105,28 @@ edge/app/
 ├── main.py          # Entry point: recognition loop + aiohttp API
 ├── camera.py        # CameraStream — threaded OpenCV capture + auto-reconnect
 ├── detector.py      # detect_and_encode — find faces, extract 128-d embeddings
-├── recognizer.py    # FaceRecognizer — cosine distance matching with cooldown
+├── recognizer.py    # FaceRecognizer — Euclidean distance matching with cooldown
 ├── enroller.py      # EnrollmentSession — capture N face samples from camera
 ├── annotator.py     # annotate_frame — draw bounding boxes + PIL Unicode text
 ├── api_client.py    # httpx async client for server REST API
 ├── offline_queue.py # SQLite-backed retry queue for offline events
 └── config.py        # All config from environment variables
 ```
+
+**Edge API Endpoints (port 8001):**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | Live View dashboard (HTML + MJPEG stream) |
+| GET | `/video_feed` | Raw MJPEG stream with bounding boxes |
+| POST | `/register` | Create user on server + enroll face in one step |
+| POST | `/enroll` | Enroll face for existing user |
+| POST | `/mode` | Toggle TRACE ↔ CHECK-IN mode |
+| POST | `/algorithm` | Switch detection method (HOG / Haar) |
+| GET | `/users` | Proxy server user list to UI |
+| GET | `/status` | Device info, mode, known users, detection method |
+| GET | `/events` | Poll recent attendance events (for toast notifications) |
+| POST | `/delete_user` | Delete user + reload embeddings |
 
 ---
 
@@ -129,10 +145,11 @@ edge/app/
 ```
 server/app/routers/
 ├── users.py       # CRUD users
-├── embeddings.py  # Store / retrieve face encodings (numpy arrays as JSON)
-├── enrollment.py  # Batch save embeddings from edge enrollment
-├── attendance.py  # Log recognized attendance events
-└── unknown.py     # Log unrecognized face captures
+├── enrollment.py  # Upload images / receive embeddings from edge
+├── embeddings.py  # Incremental sync embeddings to edge devices
+├── attendance.py  # Check-in/out logic + attendance list
+├── unknown.py     # Log unrecognized face captures
+└── dashboard.py   # Server-side attendance dashboard UI
 ```
 
 ---
@@ -144,7 +161,7 @@ server/app/routers/
 | Image | `postgres:16-alpine` |
 | Port | `5432` (internal) |
 | Volume | `pgdata` (persistent) |
-| Tables | `users`, `face_embeddings`, `attendance_logs`, `unknown_faces` |
+| Tables | `users`, `face_embeddings`, `attendance`, `unknown_logs` |
 
 ---
 
@@ -180,7 +197,7 @@ Browser  ──POST /register──▶  edge API
                              detect_and_encode() × N
                                   │
                              api_client.send_enrollment()
-                                  │ POST /api/embeddings (batch)
+                                  │ POST /api/enroll/embedding
                                   ▼
                              server → postgres
                                   │
@@ -205,7 +222,7 @@ edge  ──POST /api/attendance──▶  [server unreachable]
 
 ```
 Host ports exposed:
-  :5432  →  postgres  (internal, not needed from browser)
+  :5432  →  postgres  (host-exposed, dùng cho psql/pgAdmin)
   :8000  →  server    (REST API + Swagger)
   :8001  →  edge      (Live view + Enrollment UI)
   :8888  →  camera_bridge  (MJPEG stream, host process)
@@ -235,7 +252,7 @@ edge → host:8888:
 | `COOLDOWN_SECONDS` | Min seconds between attendance logs | `5` |
 | `DEVICE_ID` | Edge device identifier | `pi_emulator_01` |
 | `DEVICE_LOCATION` | Physical location label | `Classroom B201` |
-| `CAMERA_SOURCE` | MJPEG URL or video file path | `http://192.168.x.x:8888/stream.mjpg` |
+| `CAMERA_SOURCE` | MJPEG URL or video file path | `http://host.docker.internal:8888/stream.mjpg` |
 | `SERVER_URL` | Backend URL (from inside Docker) | `http://server:8000` |
 
 ---
