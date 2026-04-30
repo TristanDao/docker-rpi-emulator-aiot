@@ -36,6 +36,7 @@ _enrollment_queue: asyncio.Queue = asyncio.Queue()
 _latest_frame: bytes = b""
 _user_names: dict[int, str] = {}
 _current_mode: str = "trace"  # "trace" = display only, "checkin" = send attendance
+_current_detection: str = "hog"  # "hog" or "haar"
 _recent_events: collections.deque = collections.deque(maxlen=50)
 
 
@@ -142,6 +143,7 @@ def _get_overlay_info() -> dict:
         "device_id": DEVICE_ID,
         "location": DEVICE_LOCATION,
         "mode": mode,
+        "detection": _current_detection,
     }
 
 
@@ -222,7 +224,7 @@ async def recognition_loop():
             _latest_frame = encode_jpeg(annotated)
             continue
 
-        faces = detect_and_encode(frame)
+        faces = detect_and_encode(frame, detection_method=_current_detection)
 
         current_results: list[tuple[tuple, dict | None]] = []
 
@@ -407,6 +409,7 @@ _INDEX_HTML = """<!DOCTYPE html>
     <div class="pill" id="pill-mode">Mode: <span id="s-mode">—</span></div>
     <div class="pill">Known users: <span id="s-users">—</span></div>
     <button class="mode-btn" id="btn-mode" onclick="toggleMode()">&#9654; Switch to CHECK-IN</button>
+    <div class="pill">Detection: <select id="algo-detect" onchange="switchAlgo(this.value)" style="background:#23233a;border:1px solid #33334d;color:#4ade80;font-size:12px;font-weight:700;padding:2px 6px;border-radius:4px;cursor:pointer;outline:none"><option value="hog">HOG</option><option value="haar">Haar</option></select></div>
   </div>
 </div>
 
@@ -501,6 +504,10 @@ _INDEX_HTML = """<!DOCTYPE html>
 <script>
 let _selectedUserId = null;
 
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 // ── Toast notifications ──
 function showToast(ev) {
   const ct = document.getElementById('toasts');
@@ -509,10 +516,10 @@ function showToast(ev) {
   el.className = 'toast ' + (isIn ? 'toast-checkin' : 'toast-checkout');
   const icon = isIn ? '&#10004;' : '&#128682;';
   const label = isIn ? 'Check-in' : 'Check-out';
-  const detail = ev.message ? ' &mdash; ' + ev.message : '';
+  const detail = ev.message ? ' &mdash; ' + esc(ev.message) : '';
   el.innerHTML = '<div class="t-action">' + icon + ' ' + label + '</div>'
-    + '<div class="t-name">' + ev.user + '</div>'
-    + '<div class="t-time">' + ev.time + detail + '</div>';
+    + '<div class="t-name">' + esc(ev.user) + '</div>'
+    + '<div class="t-time">' + esc(ev.time) + detail + '</div>';
   ct.appendChild(el);
   setTimeout(function(){ el.remove(); }, 4200);
 }
@@ -568,6 +575,13 @@ function updateModeUI(mode) {
   }
 }
 
+// ── Algorithm switcher ──
+async function switchAlgo(val) {
+  try {
+    await fetch('/algorithm', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({detection: val})});
+  } catch {}
+}
+
 // ── Status poll ──
 async function pollStatus() {
   try {
@@ -575,6 +589,9 @@ async function pollStatus() {
     document.getElementById('s-device').textContent = d.device_id;
     document.getElementById('s-users').textContent = d.known_users;
     updateModeUI(d.mode);
+    if (d.detection) {
+      document.getElementById('algo-detect').value = d.detection;
+    }
   } catch {}
 }
 setInterval(pollStatus, 2000); pollStatus();
@@ -591,7 +608,7 @@ async function loadUsers() {
       const el = document.createElement('div');
       el.className = 'user-item';
       el.dataset.id = u.id;
-      el.innerHTML = `<div><div class="user-name">${u.full_name}</div><div class="user-meta">${u.student_id}${u.class_name?' · '+u.class_name:''}</div></div><span class="badge badge-${u.role}">${u.role}</span>`;
+      el.innerHTML = `<div><div class="user-name">${esc(u.full_name)}</div><div class="user-meta">${esc(u.student_id)}${u.class_name?' · '+esc(u.class_name):''}</div></div><span class="badge badge-${esc(u.role)}">${esc(u.role)}</span>`;
       el.onclick = () => selectUser(u.id, u.full_name, el);
       list.appendChild(el);
     });
@@ -654,7 +671,7 @@ async function doRegister() {
     } else {
       const u = d.user; const e = d.enrollment;
       res.className='result ok';
-      res.innerHTML = `&#10003; <strong>${u.full_name}</strong> registered (ID: ${u.id})<br>Face: ${e.success_count}/${e.total} samples saved`;
+      res.innerHTML = `&#10003; <strong>${esc(u.full_name)}</strong> registered (ID: ${u.id})<br>Face: ${e.success_count}/${e.total} samples saved`;
       // clear form
       ['r-name','r-sid','r-email','r-class'].forEach(id=>document.getElementById(id).value='');
     }
@@ -788,7 +805,7 @@ async def api_enroll(request: web.Request) -> web.Response:
     samples = body.get("samples", ENROLL_SAMPLES)
     timeout = body.get("timeout", ENROLL_TIMEOUT)
 
-    future = asyncio.get_event_loop().create_future()
+    future = asyncio.get_running_loop().create_future()
     await _enrollment_queue.put({
         "user_id": user_id,
         "samples": samples,
@@ -839,7 +856,7 @@ async def api_register(request: web.Request) -> web.Response:
     samples = body.get("samples", ENROLL_SAMPLES)
     timeout = body.get("timeout", ENROLL_TIMEOUT)
 
-    future = asyncio.get_event_loop().create_future()
+    future = asyncio.get_running_loop().create_future()
     await _enrollment_queue.put({
         "user_id": user_id,
         "samples": samples,
@@ -878,6 +895,21 @@ async def api_toggle_mode(request: web.Request) -> web.Response:
     return web.json_response({"mode": _current_mode})
 
 
+async def api_set_algorithm(request: web.Request) -> web.Response:
+    global _current_detection
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    detection = body.get("detection")
+    if detection and detection in ("hog", "haar"):
+        _current_detection = detection
+        logger.info("Detection algorithm switched to: %s", _current_detection)
+
+    return web.json_response({"detection": _current_detection})
+
+
 async def api_status(request: web.Request) -> web.Response:
     enrolling = not _enrollment_queue.empty()
     if enrolling:
@@ -891,6 +923,7 @@ async def api_status(request: web.Request) -> web.Response:
         "known_users": len(set(
             l["user_id"] for l in recognizer._known_labels
         )) if recognizer._known_labels else 0,
+        "detection": _current_detection,
     })
 
 
@@ -934,6 +967,7 @@ async def start_edge_api():
     app.router.add_get("/events", api_events)
     app.router.add_get("/status", api_status)
     app.router.add_post("/delete_user", api_delete_user)
+    app.router.add_post("/algorithm", api_set_algorithm)
 
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()

@@ -48,9 +48,11 @@ fi
 if [[ "$bridge_ok" == "false" ]]; then
     echo "      Bridge not running. Starting..."
 
-    # Find python from conda env 'edge', then system python3
+    # Find python: local .venv → conda env 'edge' → system python3
     PYTHON=""
-    if command -v conda &>/dev/null; then
+    if [[ -x "$ROOT/.venv/bin/python" ]]; then
+        PYTHON="$ROOT/.venv/bin/python"
+    elif command -v conda &>/dev/null; then
         CONDA_BASE="$(conda info --base 2>/dev/null || true)"
         for candidate in \
             "${CONDA_BASE}/envs/edge/bin/python" \
@@ -86,6 +88,17 @@ else
     echo -e "${GRAY}      Log: $ROOT/camera_bridge.log${NC}"
 fi
 
+# Ensure .env exists
+if [[ ! -f "$ROOT/.env" ]]; then
+    if [[ -f "$ROOT/.env.example" ]]; then
+        cp "$ROOT/.env.example" "$ROOT/.env"
+        echo -e "      ${YELLOW}.env created from .env.example${NC}"
+    else
+        echo -e "${RED}      .env file not found. Create it from CLAUDE.md section 11.${NC}"
+        exit 1
+    fi
+fi
+
 # Auto-update .env with host.docker.internal (works natively on Mac/Linux Docker Desktop)
 # On Linux, replace with actual host LAN IP
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -96,7 +109,6 @@ else
 fi
 
 if [[ -n "$HOST_ADDR" ]]; then
-    # Update CAMERA_SOURCE in .env (keep stream path, replace host only)
     sed -i.bak "s|CAMERA_SOURCE=http://[^:]*:${BRIDGE_PORT}|CAMERA_SOURCE=http://${HOST_ADDR}:${BRIDGE_PORT}|g" \
         "$ROOT/.env" && rm -f "$ROOT/.env.bak"
     echo -e "      ${GRAY}CAMERA_SOURCE → http://${HOST_ADDR}:${BRIDGE_PORT}/stream.mjpg${NC}"
