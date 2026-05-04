@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.egg-info/
+dist/
+build/
+.eggs/
+
+dataset/lfw/
+dataset/lfw_subset/
+dataset/lfw.tgz
+
+test_videos/*.mp4
+test_videos/*.avi
+
+*.db
+*.sqlite3
+
+.venv/
+venv/
+
+# camera bridge runtime files
+camera_bridge.log
+.camera_bridge.pid
+.env.bak

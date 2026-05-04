@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ':*)",
+      "Bash(docker compose:*)",
+      "Bash(curl:*)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('edge/app/main.py'\\).read\\(\\)\\); print\\('main.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('edge/app/api_client.py'\\).read\\(\\)\\); print\\('api_client.py OK'\\)\")",
+      "Bash(python:*)",
+      "Bash(ipconfig)",
+      "Bash(powershell.exe *)"
+    ]
+  }
+}
