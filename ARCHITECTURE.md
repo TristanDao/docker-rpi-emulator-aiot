@@ -13,56 +13,56 @@ On a developer's machine (Windows or Mac), the entire stack runs locally:
 ## Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     HOST MACHINE (Windows / Mac)                    │
-│                                                                     │
-│   ┌──────────────┐        MJPEG stream          ┌───────────────┐  │
-│   │  USB Webcam  │──── cv2.VideoCapture ────────▶│ camera_bridge │  │
-│   └──────────────┘                               │ :8888/stream  │  │
-│                                                  └───────┬───────┘  │
-│                                                          │ HTTP     │
-│  ┌───────────────────────────────────────────────────────┼───────┐  │
-│  │                   DOCKER COMPOSE                      │       │  │
-│  │                                                       ▼       │  │
-│  │  ┌─────────────────────────────────────────────────────────┐  │  │
-│  │  │                  edge  :8001                            │  │  │
-│  │  │                                                         │  │  │
-│  │  │   CameraStream ──▶ detect_and_encode ──▶ FaceRecognizer │  │  │
-│  │  │        │                                      │         │  │  │
-│  │  │        │ annotate_frame (PIL Unicode)          │         │  │  │
-│  │  │        ▼                                      ▼         │  │  │
-│  │  │   MJPEG /video_feed              attendance / unknown   │  │  │
-│  │  │        │                                      │         │  │  │
-│  │  │        ▼                                      ▼         │  │  │
-│  │  │   Browser UI                        OfflineQueue (SQLite)│  │  │
-│  │  │   ├── Live camera view                        │         │  │  │
-│  │  │   ├── New User registration                   │ retry   │  │  │
-│  │  │   └── Existing User enrollment                │         │  │  │
-│  │  └──────────────────────────────────┬────────────┘         │  │  │
-│  │                                     │ HTTP REST API         │  │  │
-│  │  ┌──────────────────────────────────▼──────────────────┐   │  │  │
-│  │  │                  server  :8000                       │   │  │  │
-│  │  │                                                      │   │  │  │
-│  │  │   FastAPI                                            │   │  │  │
-│  │  │   ├── POST /api/users              (register user)    │   │  │  │
-│  │  │   ├── GET  /api/users              (list users)      │   │  │  │
-│  │  │   ├── POST /api/enroll/upload      (enroll images)   │   │  │  │
-│  │  │   ├── POST /api/enroll/embedding   (enroll from edge)│   │  │  │
-│  │  │   ├── GET  /api/embeddings/sync    (sync to edge)    │   │  │  │
-│  │  │   ├── POST /api/attendance         (log attendance)  │   │  │  │
-│  │  │   ├── POST /api/unknown            (log unknown)     │   │  │  │
-│  │  │   └── GET  /docs                   (Swagger UI)      │   │  │  │
-│  │  └──────────────────────────────────┬───────────────────┘   │  │  │
-│  │                                     │ SQLAlchemy async       │  │  │
-│  │  ┌──────────────────────────────────▼──────────────────┐   │  │  │
-│  │  │              postgres  :5432                         │   │  │  │
-│  │  │   Tables: users, face_embeddings,                    │   │  │  │
-│  │  │           attendance, unknown_logs                   │   │  │  │
-│  │  └──────────────────────────────────────────────────────┘   │  │  │
-│  └─────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                    HOST MACHINE (Windows / Mac)                      │
+│                                                                      │
+│  ┌──────────────┐      MJPEG stream      ┌────────────────────┐      │
+│  │  USB Webcam  │── cv2.VideoCapture ──▶ │  camera_bridge     │      │
+│  └──────────────┘                        │  :8888/stream      │      │
+│                                          └─────────┬──────────┘      │
+│                                                    │ HTTP            │
+│  ┌─────────────────────────────────────────────────┼────────────┐    │
+│  │                  DOCKER COMPOSE                 │            │    │
+│  │                                                 ▼            │    │
+│  │  ┌───────────────────────────────────────────────────────┐   │    │
+│  │  │                 edge  :8001                           │   │    │
+│  │  │                                                       │   │    │
+│  │  │  CameraStream ──▶ detect_and_encode ──▶ Recognizer    │   │    │
+│  │  │       │                                     │         │   │    │
+│  │  │       │ annotate_frame (PIL Unicode)        │         │   │    │
+│  │  │       ▼                                     ▼         │   │    │
+│  │  │  MJPEG /video_feed            attendance / unknown    │   │    │
+│  │  │       │                                     │         │   │    │
+│  │  │       ▼                                     ▼         │   │    │
+│  │  │  Browser UI                   OfflineQueue (SQLite)   │   │    │
+│  │  │  ├── Live camera view                       │         │   │    │
+│  │  │  ├── New User registration                  │ retry   │   │    │
+│  │  │  └── Existing User enrollment               │         │   │    │
+│  │  └──────────────────────────────┬────────────────────────┘   │    │
+│  │                                 │ HTTP REST API              │    │
+│  │  ┌──────────────────────────────▼───────────────────────┐    │    │
+│  │  │                 server  :8000                        │    │    │
+│  │  │                                                      │    │    │
+│  │  │  FastAPI                                             │    │    │
+│  │  │  ├── POST /api/users             (register user)     │    │    │
+│  │  │  ├── GET  /api/users             (list users)        │    │    │
+│  │  │  ├── POST /api/enroll/upload     (enroll images)     │    │    │
+│  │  │  ├── POST /api/enroll/embedding  (enroll from edge)  │    │    │
+│  │  │  ├── GET  /api/embeddings/sync   (sync to edge)      │    │    │
+│  │  │  ├── POST /api/attendance        (log attendance)    │    │    │
+│  │  │  ├── POST /api/unknown           (log unknown)       │    │    │
+│  │  │  └── GET  /docs                  (Swagger UI)        │    │    │
+│  │  └──────────────────────────────┬───────────────────────┘    │    │
+│  │                                 │ SQLAlchemy async           │    │
+│  │  ┌──────────────────────────────▼───────────────────────┐    │    │
+│  │  │             postgres  :5432                          │    │    │
+│  │  │  Tables: users, face_embeddings,                     │    │    │
+│  │  │          attendance, unknown_logs                    │    │    │
+│  │  └──────────────────────────────────────────────────────┘    │    │
+│  └──────────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────────┘
 
-Browser:  http://localhost:8001  →  Live view + Enrollment UI
+Browser:  http://localhost:8001       →  Live view + Enrollment UI
           http://localhost:8000/docs  →  Server Swagger UI
 ```
 

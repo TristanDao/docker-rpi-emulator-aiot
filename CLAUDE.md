@@ -222,20 +222,32 @@ docker compose exec edge python -m app.enroll --user-id N [--samples 15] [--time
 
 ---
 
-## 8. Verified Test Results (LFW dataset, 15 people)
+## 8. Verified Test Results
+
+### Benchmark HOG + ResNet (LFW dataset, 50 people)
 
 | Metric | Value |
 |--------|-------|
-| Dataset | 405 images, 15 people |
-| Enrolled | 378/405 (93%) — 27 rejected (0 or 2+ faces) |
-| **Accuracy** | **98.7%** |
+| Dataset | 2012 ảnh, 50 người |
+| Train/Test split | 80% / 20% (seed=42) |
+| Detection (HOG) | 93.5% (7.2 ms/frame) |
+| **Accuracy** | **99.5%** |
 | **Precision** | **100.0%** |
-| **Recall** | **98.7%** |
-| **F1 Score** | **99.4%** |
+| **Recall** | **99.5%** |
+| **F1 Score** | **99.7%** |
 | False Positive | 0 |
-| False Negative | 1 |
-| Edge E2E | 10/10 people recognized, all HTTP 200 OK |
-| Attendance records | 69 records written to PostgreSQL |
+| False Negative | ~0.5% test set |
+
+### So sánh 4 tổ hợp
+
+| Tổ hợp | Accuracy | Precision | Recall | F1 | Speed (ms) |
+|--------|----------|-----------|--------|----|------------|
+| **HOG + ResNet** (baseline) | **99.5%** | **100.0%** | **99.5%** | **99.7%** | **33.9** |
+| HOG + LBPH | 65.3% | 65.3% | 100.0% | 79.0% | 104.1 |
+| Haar + ResNet | 96.5% | 99.3% | 97.2% | 98.2% | 42.7 |
+| Haar + LBPH | 81.7% | 81.7% | 100.0% | 89.9% | 40.5 |
+
+Chi tiết: [`tools/benchmark_results.md`](tools/benchmark_results.md)
 
 ---
 

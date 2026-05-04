@@ -238,17 +238,40 @@ python tools/benchmark_algorithms.py --dataset ./dataset/lfw_subset --output ./t
 
 Kết quả benchmark chi tiết xem tại [`tools/benchmark_results.md`](tools/benchmark_results.md).
 
-## Verified Results (LFW dataset, 15 people)
+## Verified Results — HOG + ResNet (LFW, 50 people, 2012 images)
 
 | Metric         | Value   |
 |----------------|---------|
-| **Accuracy**   | 98.7%   |
+| **Accuracy**   | 99.5%   |
 | **Precision**  | 100.0%  |
-| **Recall**     | 98.7%   |
-| **F1 Score**   | 99.4%   |
-| Enrolled       | 378/405 images (93%) |
-| False Positive | 0       |
-| False Negative | 1       |
+| **Recall**     | 99.5%   |
+| **F1 Score**   | 99.7%   |
+| Detection Rate | 93.5% (HOG) |
+| Speed          | 33.9 ms/frame |
+
+### Confusion Matrix (HOG + ResNet)
+
+| Actual \ Predicted | Known | Unknown |
+|--------------------|-------|---------|
+| **Known** | TP = 99.5% | FN = 0.5% |
+| **Unknown** | FP = 0% | TN = N/A |
+
+- **Precision (Known)** = 100% — không có trường hợp nhận sai người (FP = 0)
+- **Recall (Known)** = 99.5% — chỉ 0.5% người đã enroll không được nhận ra
+- **Accuracy** = 99.5%
+
+> **Ghi chú:** TN (True Negative) = N/A vì test set LFW chỉ chứa người đã enroll, không có ảnh unknown. FP = 0 được tính từ các trường hợp nhận sai danh tính (gán nhầm người A thành người B).
+
+### So sánh 4 tổ hợp thuật toán
+
+| Tổ hợp | Accuracy | Precision | Recall | F1 Score | Speed (ms) |
+|--------|----------|-----------|--------|----------|------------|
+| **HOG + ResNet** (baseline) | **99.5%** | **100.0%** | **99.5%** | **99.7%** | **33.9** |
+| HOG + LBPH | 65.3% | 65.3% | 100.0% | 79.0% | 104.1 |
+| Haar + ResNet | 96.5% | 99.3% | 97.2% | 98.2% | 42.7 |
+| Haar + LBPH | 81.7% | 81.7% | 100.0% | 89.9% | 40.5 |
+
+> Dataset: LFW subset, 80/20 train/test split (seed=42). Chi tiết: [`tools/benchmark_results.md`](tools/benchmark_results.md)
 
 ## API Endpoints
 
