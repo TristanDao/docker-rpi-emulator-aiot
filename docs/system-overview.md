@@ -143,16 +143,24 @@ Cấu hình qua file `.env` ở thư mục gốc. Các biến quan trọng:
 
 ---
 
-## 8. Kết quả Benchmark
+## 8. Kết quả benchmark (chuẩn hóa)
 
-Kiểm thử trên tập LFW (15 người, 405 ảnh):
+**Quy mô báo cáo:** **`tools/evaluate_accuracy.py`**, dataset **`./dataset/lfw_full_raw`** (`download_lfw_sklearn.py --mode raw`, export đầy đủ), filter **`--min-images-per-person 2`** → **1680 người (identity)**, **9164 ảnh** trong các thư mục đủ điều kiện; **4069** thư mục chỉ 1 ảnh bị loại. Chia train/test **80%/20%** theo từng người (`train_ratio=0.8`, `seed=42`): **6562** đường dẫn ảnh enroll, **2602** ảnh probe; **2466** lần đánh giá có embedding probe hợp lệ (**Total tests**, HOG + đúng 1 mặt).
 
-| Metric | Giá trị |
-|--------|---------|
-| Accuracy | 98.7% |
-| Precision | 100.0% |
-| Recall | 98.7% |
-| F1 Score | 99.4% |
-| False Positive | 0 |
-| False Negative | 1 |
-| End-to-End | 10/10 người nhận diện đúng, 69 bản ghi ghi vào PostgreSQL |
+| Chỉ số (threshold **0.5**, **2466** probe embeddings; **1680** người · **9164** ảnh qualifying) | Giá trị |
+|--------|--------|
+| Accuracy | 90.2% |
+| Precision | 98.1% |
+| Recall | 91.8% |
+| F1 | 94.8% |
+| TP / FP / FN | 2224 / 44 / 198 |
+
+So sánh ngưỡng Euclidean (cùng quy mô trên):
+
+| Threshold | Accuracy | Precision | Recall | F1 | TP | FP | FN |
+|-----------|----------|-----------|--------|----|----|----|-----|
+| **0.4** | 60.8% | 99.7% | 60.9% | 75.6% | 1500 | 4 | 962 |
+| **0.5** | 90.2% | 98.1% | 91.8% | 94.8% | 2224 | 44 | 198 |
+| **0.6** | 93.6% | 93.6% | ~100% | 96.7% | 2307 | 158 | 1 |
+
+**Nhận xét:** 0.4 lọc gắt; **0.5** khớp `DISTANCE_THRESHOLD` mặc định trên Edge; 0.6 lỏng (ít FN, FP tăng). Nên hiệu chỉnh trên dữ liệu camera thật.

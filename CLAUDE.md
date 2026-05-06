@@ -1,7 +1,7 @@
 # Face Attendance System — Project Context
 
 > File này tóm tắt toàn bộ codebase để tiếp tục phát triển mà không cần đọc lại từng file.
-> Cập nhật lần cuối: 2026-04-07.
+> Cập nhật lần cuối: 2026-05-06.
 
 ---
 
@@ -83,7 +83,8 @@ docker-rpi-emulator-aiot/
 │   ├── create_test_video.py      # Stitch dataset images into MP4 for edge
 │   └── generate_token.py         # Generate JWT token for manual API testing
 │
-├── dataset/lfw_subset/           # Downloaded face images (gitignored)
+├── dataset/lfw_full_raw/         # Raw LFW export for §8 benchmark (gitignored)
+├── dataset/lfw_subset/           # Optional small demo subset — Quick Start (gitignored)
 └── test_videos/                  # Generated test videos (gitignored)
 ```
 
@@ -224,30 +225,43 @@ docker compose exec edge python -m app.enroll --user-id N [--samples 15] [--time
 
 ## 8. Verified Test Results
 
-### Benchmark HOG + ResNet (LFW dataset, 50 people)
+**Chuẩn benchmark (ghi trong mọi báo cáo Verified):** **`evaluate_accuracy.py`** trên **`./dataset/lfw_full_raw`**, **`--min-images-per-person 2`** → **1680 identity** (thư mục), **9164 ảnh** trong các folder đủ điều kiện; trên cây đầy đủ có thêm **4069** folder chỉ 1 ảnh nên bị loại. Export: `download_lfw_sklearn.py --mode raw`, `--min-images 0 --max-people 0`. Chia **`train_ratio=0.8`**, **`seed=42`**, HOG + embedding `face_recognition`, so Euclidean. **6562** đường dẫn enroll, **2602** probe, **2466** probe embedding hợp lệ (dòng “Total tests”). Edge mặc định **`DISTANCE_THRESHOLD=0.5**.
 
-| Metric | Value |
-|--------|-------|
-| Dataset | 2012 ảnh, 50 người |
-| Train/Test split | 80% / 20% (seed=42) |
-| Detection (HOG) | 93.5% (7.2 ms/frame) |
-| **Accuracy** | **99.5%** |
-| **Precision** | **100.0%** |
-| **Recall** | **99.5%** |
-| **F1 Score** | **99.7%** |
-| False Positive | 0 |
-| False Negative | ~0.5% test set |
+### Quy mô và `Total tests`
 
-### So sánh 4 tổ hợp
+| Stat | Value |
+|------|-------|
+| Thư mục identity đủ điều kiện (≥2 ảnh/folder) | 1680 |
+| Tổng file ảnh trong các folder đủ điều kiện | 9164 |
+| Đường dẫn ảnh enroll (split train) | 6562 |
+| Đường dẫn ảnh probe (split test) | 2602 |
+| Identity có ít nhất một ảnh probe trong split | 1680 |
+| **`Total tests`** = probe embedding extract **thành công** | **2466** |
+| Probe file không tạo embedding (0/≥2 mặt HOG, lỗi đọc) | 136 |
 
-| Tổ hợp | Accuracy | Precision | Recall | F1 | Speed (ms) |
-|--------|----------|-----------|--------|----|------------|
-| **HOG + ResNet** (baseline) | **99.5%** | **100.0%** | **99.5%** | **99.7%** | **33.9** |
-| HOG + LBPH | 65.3% | 65.3% | 100.0% | 79.0% | 104.1 |
-| Haar + ResNet | 96.5% | 99.3% | 97.2% | 98.2% | 42.7 |
-| Haar + LBPH | 81.7% | 81.7% | 100.0% | 89.9% | 40.5 |
+**`Total tests` ≠ số file probe (2602):** mỗi dòng metric là một embedding probe hợp lệ.
 
-Chi tiết: [`tools/benchmark_results.md`](tools/benchmark_results.md)
+### So sánh `DISTANCE_THRESHOLD` (cùng quy mô: **1680** người, **9164** ảnh qualifying, **2466** probe embedding)
+
+Khớp mặc định trong edge (**0.5**). Bảng dưới tổng hợp chạy thử các ngưỡng:
+
+| Threshold | Total tests | Accuracy | Precision | Recall | F1 | TP | FP | FN |
+|-----------|-------------|----------|-----------|--------|----|----|----|-----|
+| **0.4** | 2466 | 60.8% | 99.7% | 60.9% | 75.6% | 1500 | 4 | 962 |
+| **0.5** | 2466 | 90.2% | 98.1% | 91.8% | 94.8% | 2224 | 44 | 198 |
+| **0.6** | 2466 | 93.6% | 93.6% | ~100% | 96.7% | 2307 | 158 | 1 |
+
+### Nhận xét chọn threshold
+
+- **0.4 — lọc rất gắt:** gần như chỉ báo “match” khi khoảng cách embedding rất nhỏ → **FP cực thấp** (4) nhưng **FN rất cao** (962): nhiều ảnh đúng người bị từ chối. Phù hợp khi **sai người không chấp nhận được** (an ninh, không thu phí nhầm), chấp nhận nhân viên/quét lại nhiều lần.
+
+- **0.5 — điểm cân bằng (đang dùng trong edge / `DISTANCE_THRESHOLD`):** trade-off hợp lý: Accuracy ~90%, Precision ~98%, Recall ~92%, F1 ~95%. Vẫn có FP/FN ở mức có thể đối phó (cooldown, đăng ký nhiều mẫu).
+
+- **0.6 — lọc lỏng:** gần như **không sót đúng người** (FN = 1), Recall ~100%, nhưng **FP tăng mạnh** (158 vs 44 ở 0.5): dễ nhớ nhầm hai người là một. Chỉ phù hợp khi **ưu tiên không bỏ sót** và có cách xử lý nhận nhầm (manual review, ngữ cảnh ít người).
+
+Ngưỡng **tối ưu** phụ thuộc camera, ánh sáng, độ phân giải và số mẫu enroll; nên **hiệu chỉnh trên dữ liệu thật** hoặc quét thêm vài giá trị quanh 0.5 thay vì copy cứng bảng LFW.
+
+Script khi chạy in thêm **`Probe scope`** và **`Total tests`** (bao nhiêu identity, bao nhiêu file probe, bao nhiêu embedding thành công).
 
 ---
 

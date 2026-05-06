@@ -7,6 +7,7 @@ dist/
 build/
 .eggs/
 
+dataset/
 dataset/lfw/
 dataset/lfw_subset/
 dataset/lfw.tgz

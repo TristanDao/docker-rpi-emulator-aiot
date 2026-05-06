@@ -171,7 +171,7 @@ docker compose up -d postgres server
 # 2. Install tool dependencies (on host machine)
 pip install -r tools/requirements.txt
 
-# 3. Download LFW dataset subset (15 people, ~400 images)
+# 3. Download a small LFW subset for Quick Start demo only (≠ canonical benchmark below: 1680 people / 9164 images)
 python tools/download_lfw_sklearn.py --output ./dataset/lfw_subset --min-images 10 --max-people 15
 
 # 4. Seed test users into the database
@@ -197,81 +197,39 @@ docker compose up edge
 curl "http://localhost:8000/api/attendance?date=$(date +%Y-%m-%d)"
 ```
 
-## Dataset (LFW — Labeled Faces in the Wild)
+## Verified Results (`tools/evaluate_accuracy.py`)
 
-Hệ thống sử dụng LFW dataset để test và benchmark. Có 2 script download:
+**Canonical LFW benchmark scale:** **1,680 identities** and **9,164 image files** in folders that satisfy **`--min-images-per-person 2`** (raw export **`./dataset/lfw_full_raw`** via `download_lfw_sklearn.py --mode raw`; **4,069** single-image identity folders in the full tree are excluded). After an **80%/20%** per-identity train/test split: **6,562** enroll paths, **2,602** probe paths; **2,466** probe runs count toward metrics (successful single-face HOG extractions). **`seed=42`**. Edge default **`DISTANCE_THRESHOLD` = 0.5** (primary row in the table below).
 
-### Cách 1: via sklearn (khuyên dùng)
+| Stat | Value |
+|------|-------|
+| Qualifying identities | 1680 |
+| Total image files in qualifying folders | 9164 |
+| Image paths used for enroll (train split) | 6562 |
+| Image paths held out as probes (test split) | 2602 |
+| Identities in probe split | 1680 (same as qualifying; each has ≥1 probe path) |
+| Probe files with a successful embedding | 2466 |
+| Probe files skipped (no embedding) | 136 |
 
-```bash
-# Demo nhỏ (15 người, ~400 ảnh) — đủ để test pipeline
-python tools/download_lfw_sklearn.py --output ./dataset/lfw_subset --min-images 10 --max-people 15
+**Total tests** in the script output is **2466**, not 2602: it counts **one row per successful probe embedding** (readable image + exactly one HOG face). The remaining probe files do not produce an embedding (read failure, zero faces, or multiple faces), so they do not enter TP/FP/FN.
 
-# Benchmark đầy đủ (50 người, ~2000 ảnh) — dùng cho báo cáo so sánh thuật toán
-python tools/download_lfw_sklearn.py --output ./dataset/lfw_subset --min-images 10 --max-people 50
-```
+| Threshold | Total tests | Accuracy | Precision | Recall | F1 | TP | FP | FN |
+|-----------|-------------|----------|-----------|--------|----|----|----|-----|
+| **0.4** | 2466 | 60.8% | 99.7% | 60.9% | 75.6% | 1500 | 4 | 962 |
+| **0.5** | 2466 | 90.2% | 98.1% | 91.8% | 94.8% | 2224 | 44 | 198 |
+| **0.6** | 2466 | 93.6% | 93.6% | ~100%* | 96.7% | 2307 | 158 | 1 |
 
-### Cách 2: direct URL từ UMass
+\*Recall shown as 100.0% in the run; 1 false negative out of 2466 tests.
 
-```bash
-python tools/download_lfw.py --output ./dataset/lfw_subset --min-images 10 --max-people 50
-```
+#### Threshold notes
 
-> **Lưu ý**: Cách 2 download từ `vis-www.cs.umass.edu` — có thể bị DNS/firewall chặn. Ưu tiên dùng cách 1.
+- **0.4:** Very strict — almost no **false positives** (4) but many **false negatives** (962): correct users often rejected as unknown. Use when wrong identity must be avoided at almost any cost.
 
-### Sau khi download
+- **0.5:** Matches default **`DISTANCE_THRESHOLD`** on Edge — good overall trade-off (~90% accuracy, ~98% precision, ~92% recall). Reasonable baseline for attendance with cooldown and multiple enrollment samples.
 
-```bash
-# Tạo user từ tên thư mục dataset
-python tools/seed_users.py --dataset ./dataset/lfw_subset --server http://localhost:8000
+- **0.6:** Loose acceptance — misses almost no genuine user (FN = 1) but **false positives spike** (158 vs 44). Higher risk of matching the wrong enrolled person; only justified when misses are unacceptable and operational guardrails exist.
 
-# Enroll toàn bộ ảnh
-python tools/batch_enroll.py --dataset ./dataset/lfw_subset --server http://localhost:8000
-```
-
-### Benchmark so sánh thuật toán
-
-```bash
-# Chạy benchmark 4 tổ hợp (HOG/Haar × ResNet/LBPH), xuất markdown report
-python tools/benchmark_algorithms.py --dataset ./dataset/lfw_subset --output ./tools/benchmark_results.md
-```
-
-Kết quả benchmark chi tiết xem tại [`tools/benchmark_results.md`](tools/benchmark_results.md).
-
-## Verified Results — HOG + ResNet (LFW, 50 people, 2012 images)
-
-| Metric         | Value   |
-|----------------|---------|
-| **Accuracy**   | 99.5%   |
-| **Precision**  | 100.0%  |
-| **Recall**     | 99.5%   |
-| **F1 Score**   | 99.7%   |
-| Detection Rate | 93.5% (HOG) |
-| Speed          | 33.9 ms/frame |
-
-### Confusion Matrix (HOG + ResNet)
-
-| Actual \ Predicted | Known | Unknown |
-|--------------------|-------|---------|
-| **Known** | TP = 99.5% | FN = 0.5% |
-| **Unknown** | FP = 0% | TN = N/A |
-
-- **Precision (Known)** = 100% — không có trường hợp nhận sai người (FP = 0)
-- **Recall (Known)** = 99.5% — chỉ 0.5% người đã enroll không được nhận ra
-- **Accuracy** = 99.5%
-
-> **Ghi chú:** TN (True Negative) = N/A vì test set LFW chỉ chứa người đã enroll, không có ảnh unknown. FP = 0 được tính từ các trường hợp nhận sai danh tính (gán nhầm người A thành người B).
-
-### So sánh 4 tổ hợp thuật toán
-
-| Tổ hợp | Accuracy | Precision | Recall | F1 Score | Speed (ms) |
-|--------|----------|-----------|--------|----------|------------|
-| **HOG + ResNet** (baseline) | **99.5%** | **100.0%** | **99.5%** | **99.7%** | **33.9** |
-| HOG + LBPH | 65.3% | 65.3% | 100.0% | 79.0% | 104.1 |
-| Haar + ResNet | 96.5% | 99.3% | 97.2% | 98.2% | 42.7 |
-| Haar + LBPH | 81.7% | 81.7% | 100.0% | 89.9% | 40.5 |
-
-> Dataset: LFW subset, 80/20 train/test split (seed=42). Chi tiết: [`tools/benchmark_results.md`](tools/benchmark_results.md)
+Lower threshold ⇒ fewer accepts (stricter matching); tune on **your** cameras and enrollments—the LFW numbers are a coarse guide only.
 
 ## API Endpoints
 
@@ -347,7 +305,7 @@ Kết quả benchmark chi tiết xem tại [`tools/benchmark_results.md`](tools/
 │   ├── evaluate_accuracy.py   # Train/test split accuracy evaluation
 │   ├── create_test_video.py   # Generate test video from images
 │   └── generate_token.py      # Generate JWT token for testing
-├── dataset/                   # Face images (LFW subset)
+├── dataset/                   # e.g. lfw_full_raw (canonical benchmark) or lfw_subset (Quick Start demo); gitignored
 └── test_videos/               # Demo videos for edge emulator
 ```
 
